@@ -1,0 +1,22 @@
+{
+    "compilerOptions": {
+        "module": "commonjs",
+        "target": "es2017",
+        "lib": [
+            "es2017",
+            "dom"
+        ],
+        "sourceMap": true,
+        "baseUrl": ".",
+        "rootDir": ".",
+        "jsx": "react",
+        "jsxFactory": "React.createElement",
+        "strict": true,
+        "newLine": "LF",
+        "noImplicitReturns": true,
+        "resolveJsonModule": true
+    },
+    "exclude": [
+        "node_modules",
+    ]
+}
