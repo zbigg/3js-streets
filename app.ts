@@ -138,18 +138,24 @@ function createStreetGeometry() {
 
     const b = new LineGeometryBuilder();
     b.addLine([
-        new THREE.Vector3(-2, 0, 0),
-        new THREE.Vector3(2, 0, 0)
+        new THREE.Vector3(-3, 0, 0),
+        new THREE.Vector3(0, 0, 0)
+    ])
+    b.addLine([
+        new THREE.Vector3(0, 0, 0),
+        new THREE.Vector3(7, 2, 0),
     ])
 
     b.addLine([
-        new THREE.Vector3(0, 2, 0),
-        new THREE.Vector3(0, -2, 0)
+        new THREE.Vector3(-2, 4, 0),
+        new THREE.Vector3(1, -2, 0),
+        new THREE.Vector3(1, -5, 0)
     ]);
 
-    console.log("X", b);
+    return b.buildGeometry();
+}
 
-    //const material = new THREE.MeshBasicMaterial( { color: "#00ff00", wireframe: true } );
+function createStreetFinalMaterial(texture: THREE.Texture) {
     const material = new THREE.ShaderMaterial({
         vertexShader: `
             varying vec2 vUv;
@@ -159,36 +165,89 @@ function createStreetGeometry() {
 
                 gl_Position =   projectionMatrix *
                                 modelViewMatrix *
-                                vec4(position,1.0);
+                                vec4(position, 1.0);
             }
         `,
         fragmentShader: `
             varying vec2 vUv;
+            uniform sampler2D prePassTexture;
+            uniform vec3 resolution;
 
             vec3 fg = vec3(0.5,0.5,0.5);
             vec3 bg = vec3(0.2,0.2,0.2);
-            vec3 dash = vec3(1,1,1);
+            vec3 dash = vec3(0.8,0.8,0.8);
 
             const float outlineWidth = 0.1;
             const float dashWidth = 0.1;
             const float dashSize = 0.3;
             const float dashGap = 0.3;
+
             float dashLen = dashSize + dashGap;
 
             void main() {
-                float inDash = step(mod(vUv.x, dashLen), dashSize);
+                vec2 screenPos = vec2(gl_FragCoord.x / resolution.x, gl_FragCoord.y / resolution.y);
+                vec4 prePass = texture2D(prePassTexture, screenPos);
+                float inForeground = step(prePass.r, 0.01);
+
+                // why ???
+                float notInIntersetion = step(prePass.r, 2.0/4.0);
+
+                float inOutline = inForeground * step(prePass.g, 0.01);
+
+                float inDashH = step(mod(vUv.x, dashLen), dashSize);
+                float inDashV = step(abs(vUv.y), dashWidth);
                 vec3 col = bg;
-                col = mix(col, fg, step(abs(vUv.y), 1.0 - outlineWidth));
-                col = mix(col, dash, step(abs(vUv.y), dashWidth) * inDash );
+                float inOutlineOld = step(abs(vUv.y), 1.0 - outlineWidth);
+                col = mix(col, fg, inForeground);
+                col = mix(col, dash, notInIntersetion * inDashV * inDashH );
 
                 gl_FragColor = vec4(col, 0);
             }
-        `
-    })
-    const mesh = new THREE.Mesh( b.buildGeometry(), material );
-    mesh.position.set(0, 0, -1);
+        `,
+        uniforms: {
+            prePassTexture: <THREE.IUniform>{
+                // type: "t",
+                value: texture
+            },
+            resolution: {
+                value: new THREE.Vector2(window.innerWidth * window.devicePixelRatio, window.innerHeight * window.devicePixelRatio)
+            }
+        }
+    });
+    return material;
+}
 
-    return mesh;
+function createStreetPrePassMaterial() {
+    const material = new THREE.ShaderMaterial({
+        vertexShader: `
+            varying vec2 vUv;
+            void main() {
+                vUv = uv;
+                gl_Position =   projectionMatrix *
+                                modelViewMatrix *
+                                vec4(position, 1.0);
+            }
+        `,
+        fragmentShader: `
+            varying vec2 vUv;
+
+            const float outlineWidth = 0.1;
+
+            void main() {
+                float isFg = step(abs(vUv.y), 1.0 - outlineWidth);
+                float isBg = abs(1.0 - isFg);
+
+                gl_FragColor = vec4(isFg/4.0, isBg/4.0, 1.0, 1.0);
+            }
+        `
+    });
+    material.transparent = true;
+    material.blending = THREE.CustomBlending;
+    material.premultipliedAlpha = false;
+    material.blendEquation = THREE.AddEquation;
+    material.blendDst = THREE.OneFactor;
+    material.blendSrc = THREE.OneFactor;
+    return material;
 }
 
 function streetsSampleApp(canvas: HTMLCanvasElement) {
@@ -199,28 +258,54 @@ function streetsSampleApp(canvas: HTMLCanvasElement) {
     camera.position.z = 4;
 
     const renderer = new THREE.WebGLRenderer({antialias:true, canvas});
+    renderer.autoClear = false;
 
     renderer.setClearColor("#000000");
 
     renderer.setSize( window.innerWidth, window.innerHeight );
+    const dpr = window.devicePixelRatio
+    renderer.setPixelRatio(dpr);
 
-    const geometry = new THREE.BoxGeometry( 1, 1, 1 );
-    const material = new THREE.MeshBasicMaterial( { color: "#433F81" } );
-    const cube = new THREE.Mesh( geometry, material );
+    // for some reasons, rt, when used for read (in second pass, cannot be used) to
+    // write in next frame, so cycle trough two buffers, so each frame uses other
+    // renderTarget/texture
+    const pass1Targets = [
+        new THREE.WebGLRenderTarget(window.innerWidth*dpr, window.innerHeight*dpr),
+        new THREE.WebGLRenderTarget(window.innerWidth*dpr, window.innerHeight*dpr)
+    ];
 
-    // Add cube to Scene
-    //scene.add( createBackGroundGeometry() );
-    scene.add( createStreetGeometry());
-    scene.add( cube );
+    const streetGeometry = createStreetGeometry();
+
+    const finalPassMaterial = createStreetFinalMaterial(pass1Targets[0].texture);
+
+    const streetPrePassScene = new THREE.Scene();
+
+    const streetsPrePassMesh = new THREE.Mesh( streetGeometry, createStreetPrePassMaterial() );
+    const streetsFinalPassMesh = new THREE.Mesh( streetGeometry, finalPassMaterial );
+
+    streetsPrePassMesh.position.set(0, 0, -1);
+    streetsFinalPassMesh.position.set(0,0,-1);
+
+    streetPrePassScene.add(streetsPrePassMesh);
+
+    scene.add( streetsFinalPassMesh);
+    //scene.add( cube );
 
     // Render Loop
+    let frame = 0;
     const render = function () {
+        const pass1Target = pass1Targets[frame++ % 2];
         requestAnimationFrame( render );
 
-        cube.rotation.x += 0.01;
-        cube.rotation.y += 0.01;
+        // Render the street pre-pass
+        renderer.setRenderTarget(pass1Target);
+        renderer.clear();
+        finalPassMaterial.uniforms.prePassTexture.value = pass1Target.texture;
 
-        // Render the scene
+        renderer.render(streetPrePassScene, camera, pass1Target);
+
+        // Render final streets
+        renderer.setRenderTarget();
         renderer.render(scene, camera);
     };
 
