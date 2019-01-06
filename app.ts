@@ -38,7 +38,7 @@ class LineGeometryBuilder {
 
     constructor() {
         this.positionBuffer = new Float32Array(LineGeometryBuilder.MAX * 3)
-        this.uvBuffer = new Float32Array(LineGeometryBuilder.MAX * 2);
+        this.uvBuffer = new Float32Array(LineGeometryBuilder.MAX * 3);
         this.normalsBuffer = new Float32Array(LineGeometryBuilder.MAX * 2);
         this.indexBuffer = new Uint16Array(LineGeometryBuilder.MAX);
     }
@@ -77,6 +77,39 @@ class LineGeometryBuilder {
                 normal.y = normal.y + delta.x;
             }
             normal.normalize();
+            if (i === 0) {
+                // startcap, upper point
+                this.positionBuffer[vertexIndex * 3] = p0.x + normal.x - normal.y;
+                this.positionBuffer[vertexIndex * 3 + 1] = p0.y + normal.y + normal.x;
+                this.positionBuffer[vertexIndex * 3 + 2] = p0.z + normal.z + normal.z;
+
+                // normals !
+                this.uvBuffer[vertexIndex * 3] = -1;
+                this.uvBuffer[vertexIndex * 3 + 1] = 1;
+                this.uvBuffer[vertexIndex * 3 + 2] = 0;
+
+                ++vertexIndex;
+
+                // startcap, end-point
+                this.positionBuffer[vertexIndex * 3] = p0.x - normal.x - normal.y;
+                this.positionBuffer[vertexIndex * 3 + 1] = p0.y - normal.y + normal.x;
+                this.positionBuffer[vertexIndex * 3 + 2] = p0.z - normal.z + normal.z;
+
+                // normals !
+                this.uvBuffer[vertexIndex * 3] = -1;
+                this.uvBuffer[vertexIndex * 3 + 1] = -1;
+                this.uvBuffer[vertexIndex * 3 + 2] = 0;
+
+                ++vertexIndex;
+
+                this.indexBuffer[index++] = vertexIndex - 1;
+                this.indexBuffer[index++] = vertexIndex - 0;
+                this.indexBuffer[index++] = vertexIndex - 2;
+
+                this.indexBuffer[index++] = vertexIndex - 1;
+                this.indexBuffer[index++] = vertexIndex + 1;
+                this.indexBuffer[index++] = vertexIndex - 0;
+            }
 
             this.positionBuffer[vertexIndex * 3] = p0.x + normal.x;
             this.positionBuffer[vertexIndex * 3 + 1] = p0.y + normal.y;
@@ -86,21 +119,23 @@ class LineGeometryBuilder {
             this.normalsBuffer[vertexIndex * 3 + 1] = normal.y;
             this.normalsBuffer[vertexIndex * 3 + 2] = normal.z;
 
-            this.uvBuffer[vertexIndex * 2] = distance;
-            this.uvBuffer[vertexIndex * 2 + 1] = 1;
+            this.uvBuffer[vertexIndex * 3] = 0;
+            this.uvBuffer[vertexIndex * 3 + 1] = 1;
+            this.uvBuffer[vertexIndex * 3 + 2] = distance;
 
             ++vertexIndex;
 
-            this.positionBuffer[vertexIndex * 3] = p0.x -normal.x;
-            this.positionBuffer[vertexIndex * 3 + 1] = p0.y -normal.y;
-            this.positionBuffer[vertexIndex * 3 + 2] = p0.z -normal.z;
+            this.positionBuffer[vertexIndex * 3] = p0.x - normal.x;
+            this.positionBuffer[vertexIndex * 3 + 1] = p0.y - normal.y;
+            this.positionBuffer[vertexIndex * 3 + 2] = p0.z - normal.z;
 
             this.normalsBuffer[vertexIndex * 3] = -normal.x;
             this.normalsBuffer[vertexIndex * 3 + 1] = -normal.y;
             this.normalsBuffer[vertexIndex * 3 + 2] = -normal.z;
 
-            this.uvBuffer[vertexIndex * 2] = distance;
-            this.uvBuffer[vertexIndex * 2 + 1] = -1;
+            this.uvBuffer[vertexIndex * 3] = 0;
+            this.uvBuffer[vertexIndex * 3 + 1] = -1;
+            this.uvBuffer[vertexIndex * 3 + 2] = distance;
 
             ++vertexIndex;
 
@@ -123,12 +158,12 @@ class LineGeometryBuilder {
     buildGeometry() {
         const geometry = new THREE.BufferGeometry();
         this.positionBuffer = this.positionBuffer.slice(0, this.vertexCount * 3);
-        this.uvBuffer = this.uvBuffer.slice(0, this.vertexCount * 2);
+        this.uvBuffer = this.uvBuffer.slice(0, this.vertexCount * 3);
         this.normalsBuffer = this.normalsBuffer.slice(0, this.vertexCount * 3);
         this.indexBuffer = this.indexBuffer.slice(0, this.indexCount);
 
         geometry.addAttribute( 'position', new THREE.BufferAttribute( this.positionBuffer, 3 ) );
-        geometry.addAttribute( 'uv', new THREE.BufferAttribute( this.uvBuffer, 2 ) );
+        geometry.addAttribute( 'uvx', new THREE.BufferAttribute( this.uvBuffer, 3 ) );
         //geometry.addAttribute( 'normal', new THREE.BufferAttribute( this.normalsBuffer, 3 ) );
         geometry.setIndex(new THREE.BufferAttribute(this.indexBuffer, 1));
         return geometry;
@@ -149,7 +184,7 @@ function createStreetGeometry() {
     b.addLine([
         new THREE.Vector3(-2, 4, 0),
         new THREE.Vector3(1, -2, 0),
-        new THREE.Vector3(1, -5, 0)
+        new THREE.Vector3(4, -2, 0)
     ]);
 
     return b.buildGeometry();
@@ -157,11 +192,13 @@ function createStreetGeometry() {
 
 function createStreetFinalMaterial(texture: THREE.Texture) {
     const material = new THREE.ShaderMaterial({
+        name: "StreetDrawPass",
         vertexShader: `
-            varying vec2 vUv;
+        attribute vec3 uvx;
+        varying vec3 vUv;
 
             void main() {
-                vUv = uv;
+                vUv = uvx;
 
                 gl_Position =   projectionMatrix *
                                 modelViewMatrix *
@@ -169,37 +206,47 @@ function createStreetFinalMaterial(texture: THREE.Texture) {
             }
         `,
         fragmentShader: `
-            varying vec2 vUv;
+            varying vec3 vUv;
             uniform sampler2D prePassTexture;
             uniform vec3 resolution;
 
-            vec3 fg = vec3(0.5,0.5,0.5);
-            vec3 bg = vec3(0.2,0.2,0.2);
-            vec3 dash = vec3(0.8,0.8,0.8);
+            vec3 RED = vec3(1.0, 0.0, 0.0);
+            vec3 fg = vec3(0.5, 0.5, 0.5);
+            vec3 bg = vec3(0.2, 0.2, 0.2);
+            vec3 dash = vec3(0.8, 0.8, 0.8);
 
-            const float outlineWidth = 0.1;
             const float dashWidth = 0.1;
             const float dashSize = 0.3;
             const float dashGap = 0.3;
 
             float dashLen = dashSize + dashGap;
 
+            float reverse(float v) {
+                return abs(1.0 - v);
+            }
             void main() {
                 vec2 screenPos = vec2(gl_FragCoord.x / resolution.x, gl_FragCoord.y / resolution.y);
                 vec4 prePass = texture2D(prePassTexture, screenPos);
-                float inForeground = step(prePass.r, 0.01);
+
+                float inForegroundRaw = reverse(step(prePass.r, 0.01));
+                float inOutlineRaw = reverse(step(prePass.g, 0.01));
+                if (inForegroundRaw < 1.0 && inOutlineRaw < 1.0) {
+                    discard;
+                }
 
                 // why ???
                 float notInIntersetion = step(prePass.r, 2.0/4.0);
 
-                float inOutline = inForeground * step(prePass.g, 0.01);
+                float inForeground = inForegroundRaw;// * reverse(inOutlineRaw);
+                float inOutline = inOutlineRaw;
 
-                float inDashH = step(mod(vUv.x, dashLen), dashSize);
+                float inDashH = step(mod(vUv.z, dashLen), dashSize);
                 float inDashV = step(abs(vUv.y), dashWidth);
-                vec3 col = bg;
-                float inOutlineOld = step(abs(vUv.y), 1.0 - outlineWidth);
+
+                vec3 col = RED;
+                col = mix(col, bg, inOutlineRaw);
                 col = mix(col, fg, inForeground);
-                col = mix(col, dash, notInIntersetion * inDashV * inDashH );
+                col = mix(col, dash, notInIntersetion * inDashV * inDashH);
 
                 gl_FragColor = vec4(col, 0);
             }
@@ -213,28 +260,35 @@ function createStreetFinalMaterial(texture: THREE.Texture) {
                 value: new THREE.Vector2(window.innerWidth * window.devicePixelRatio, window.innerHeight * window.devicePixelRatio)
             }
         }
+        //wireframe: true
     });
     return material;
 }
 
 function createStreetPrePassMaterial() {
     const material = new THREE.ShaderMaterial({
+        name: "StreetPrePass",
         vertexShader: `
-            varying vec2 vUv;
+            attribute vec3 uvx;
+            varying vec3 vUv;
             void main() {
-                vUv = uv;
+                vUv = uvx;
                 gl_Position =   projectionMatrix *
                                 modelViewMatrix *
                                 vec4(position, 1.0);
             }
         `,
         fragmentShader: `
-            varying vec2 vUv;
+            varying vec3 vUv;
 
             const float outlineWidth = 0.1;
 
             void main() {
-                float isFg = step(abs(vUv.y), 1.0 - outlineWidth);
+                float centerDist = sqrt(vUv.y * vUv.y + vUv.x * vUv.x);
+                if (centerDist > 1.0) {
+                    discard;
+                }
+                float isFg = step(centerDist, 1.0 - outlineWidth);
                 float isBg = abs(1.0 - isFg);
 
                 gl_FragColor = vec4(isFg/4.0, isBg/4.0, 1.0, 1.0);
