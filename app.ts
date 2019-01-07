@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { CopyShader, ExtrudeBufferGeometry, OBJLoader2, Path } from 'three';
 
 console.log("hello2");
 
@@ -52,104 +53,142 @@ class LineGeometryBuilder {
         let index = this.indexCount;
 
         const delta = new THREE.Vector3();
-        const normal = new THREE.Vector3();
+        const normal0 = new THREE.Vector3();
+        const normal1 = new THREE.Vector3();
+        const extrudeBase = new THREE.Vector3();
+        const extrudeInt0 = new THREE.Vector3();
+        const extrudeInt1 = new THREE.Vector3();
+        const P = new THREE.Vector3();
         let distance = 0;
 
+        let p0: THREE.Vector3;
+        const emitVertexRaw = (ox: number, oy: number, oz: number, ux: number, uy: number, uz: number) => {
+            this.positionBuffer[vertexIndex * 3] = p0.x + ox;
+            this.positionBuffer[vertexIndex * 3 + 1] = p0.y + oy;
+            this.positionBuffer[vertexIndex * 3 + 2] = p0.z + oz;
+
+            // normals !
+            this.uvBuffer[vertexIndex * 3] = ux;
+            this.uvBuffer[vertexIndex * 3 + 1] = uy;
+            this.uvBuffer[vertexIndex * 3 + 2] = uz;
+
+            ++vertexIndex;
+        }
+
+        const emitVertex = (offset: THREE.Vector3, ux: number, uy: number, uz: number) => {
+            emitVertexRaw(offset.x, offset.y, offset.z, ux, uy, uz);
+        }
+
+        const emitFace = (o1: number, o2: number, o3: number) => {
+            this.indexBuffer[index++] = vertexIndex + o1;
+            this.indexBuffer[index++] = vertexIndex + o2;
+            this.indexBuffer[index++] = vertexIndex + o3;
+        }
+
         for(let i = 0; i < points.length; i++) {
-            const p0 = points[i];
-            const last = i == points.length-1;
+            p0 = points[i];
+            const last = (i === points.length - 1);
             const p1 = last ? undefined : points[i+1];
 
             if (i === 0) {
                 delta.copy(p1!);
                 delta.sub(p0);
+                normal0.set(-delta.y, delta.x, 0);
+                normal0.normalize();
             }
             const currentDistance = delta.length();
 
             // NOTE line up vector is hardcoded to (0,0,1)
-            normal.set(-delta.y, delta.x, 0);
 
+            let extrudeFactor = 1;
+            let turnRight: boolean = false;
             if (i !== 0 && p1 !== undefined) {
                 delta.copy(p1);
                 delta.sub(p0);
-                // delta is actually nextDelta
-                normal.x = normal.x - delta.y;
-                normal.y = normal.y + delta.x;
+                normal1.set(-delta.y, delta.x, 0);
+
+                const crossProductMagnitute = normal0.x * normal1.y - normal0.y * normal1.x;
+                // determine, if we go upward
+                turnRight = crossProductMagnitute < 0;
+
+                normal1.normalize();
+                const dotProduct = normal0.dot(normal1);
+                const angle = Math.acos(dotProduct);
+                extrudeFactor = 1/Math.cos(angle/2);
+                console.log("x", p0, p1, normal0.clone(), normal1.clone(), dotProduct, angle, extrudeFactor, turnRight);
+
+                extrudeBase.copy(normal0).add(normal1);
+                extrudeBase.normalize();
+
+                extrudeBase.multiplyScalar(extrudeFactor);
+                if (!turnRight) {
+                    extrudeBase.negate();
+                }
+
+                extrudeInt0.copy(extrudeBase);
+                extrudeInt0.negate();
+                extrudeInt1.copy(extrudeInt0);
+
+                if (turnRight) {
+                    extrudeInt0.add(normal0).add(normal0);
+                    extrudeInt1.add(normal1).add(normal1);
+                } else {
+                    extrudeInt0.sub(normal0).sub(normal0);
+                    extrudeInt1.sub(normal1).sub(normal1);
+                }
+
+                normal0.copy(normal1);
+            } else {
+                extrudeBase.copy(normal0);
             }
-            normal.normalize();
+
             if (i === 0) {
                 // startcap, upper point
-                this.positionBuffer[vertexIndex * 3] = p0.x + normal.x - normal.y;
-                this.positionBuffer[vertexIndex * 3 + 1] = p0.y + normal.y + normal.x;
-                this.positionBuffer[vertexIndex * 3 + 2] = p0.z + normal.z + normal.z;
+                emitVertexRaw(extrudeBase.x - extrudeBase.y, extrudeBase.y + extrudeBase.x, extrudeBase.z + extrudeBase.z, -1, 1, 0);
 
-                // normals !
-                this.uvBuffer[vertexIndex * 3] = -1;
-                this.uvBuffer[vertexIndex * 3 + 1] = 1;
-                this.uvBuffer[vertexIndex * 3 + 2] = 0;
+                // lower
+                emitVertexRaw(-extrudeBase.x - extrudeBase.y, -extrudeBase.y + extrudeBase.x, - extrudeBase.z + extrudeBase.z, -1, -1, 0);
 
-                ++vertexIndex;
-
-                // startcap, end-point
-                this.positionBuffer[vertexIndex * 3] = p0.x - normal.x - normal.y;
-                this.positionBuffer[vertexIndex * 3 + 1] = p0.y - normal.y + normal.x;
-                this.positionBuffer[vertexIndex * 3 + 2] = p0.z - normal.z + normal.z;
-
-                // normals !
-                this.uvBuffer[vertexIndex * 3] = -1;
-                this.uvBuffer[vertexIndex * 3 + 1] = -1;
-                this.uvBuffer[vertexIndex * 3 + 2] = 0;
-
-                ++vertexIndex;
-
-                this.indexBuffer[index++] = vertexIndex - 1;
-                this.indexBuffer[index++] = vertexIndex - 0;
-                this.indexBuffer[index++] = vertexIndex - 2;
-
-                this.indexBuffer[index++] = vertexIndex - 1;
-                this.indexBuffer[index++] = vertexIndex + 1;
-                this.indexBuffer[index++] = vertexIndex - 0;
+                emitFace(-1, 0, -2);
+                emitFace(-1, 1, 0);
             }
 
-            this.positionBuffer[vertexIndex * 3] = p0.x + normal.x;
-            this.positionBuffer[vertexIndex * 3 + 1] = p0.y + normal.y;
-            this.positionBuffer[vertexIndex * 3 + 2] = p0.z + normal.z;
+            if (i > 0 && p1 !== undefined) {
+                if (turnRight) {
+                    console.log('X', i, turnRight)
+                    emitVertex(extrudeInt0, 0, 1, distance);
+                    emitVertex(extrudeBase, -1, 1, distance);
+                    emitVertex(extrudeInt1, 0, 1, distance);
+                    emitVertex(P.copy(extrudeBase).negate(), 0, -1, distance);
 
-            this.normalsBuffer[vertexIndex * 3 ] = normal.x;
-            this.normalsBuffer[vertexIndex * 3 + 1] = normal.y;
-            this.normalsBuffer[vertexIndex * 3 + 2] = normal.z;
+                    emitFace(-4, -6, -5);
+                    emitFace(-4, -5, -1);
+                    emitFace(-3, -4, -1);
+                    emitFace(-2, -3, -1);
 
-            this.uvBuffer[vertexIndex * 3] = 0;
-            this.uvBuffer[vertexIndex * 3 + 1] = 1;
-            this.uvBuffer[vertexIndex * 3 + 2] = distance;
+                } else {
+                    console.log('X', i, turnRight)
+                    emitVertex(extrudeInt0, 0, -1, distance);
+                    emitVertex(extrudeBase, 0, -1, distance);
+                    emitVertex(P.copy(extrudeBase).negate(), 0, 1, distance);
+                    emitVertex(extrudeInt1, 0, -1, distance);
 
-            ++vertexIndex;
+                    emitFace(-2, -6, -5);
+                    emitFace(-2, -5, -4);
+                    emitFace(-2, -4, -3);
+                    emitFace(-1, -2, -3);
+                }
+            } else {
+                emitVertex(extrudeBase, 0, 1, distance);
+                emitVertex(P.copy(extrudeBase).negate(), 0, -1, distance);
 
-            this.positionBuffer[vertexIndex * 3] = p0.x - normal.x;
-            this.positionBuffer[vertexIndex * 3 + 1] = p0.y - normal.y;
-            this.positionBuffer[vertexIndex * 3 + 2] = p0.z - normal.z;
-
-            this.normalsBuffer[vertexIndex * 3] = -normal.x;
-            this.normalsBuffer[vertexIndex * 3 + 1] = -normal.y;
-            this.normalsBuffer[vertexIndex * 3 + 2] = -normal.z;
-
-            this.uvBuffer[vertexIndex * 3] = 0;
-            this.uvBuffer[vertexIndex * 3 + 1] = -1;
-            this.uvBuffer[vertexIndex * 3 + 2] = distance;
-
-            ++vertexIndex;
+                if (i === points.length - 1) {
+                    emitFace(-2, -4, -3);
+                    emitFace(-2, -3, -1);
+                }
+            }
 
             distance += currentDistance;
-
-            if (i > 0) {
-                this.indexBuffer[index++] = vertexIndex - 2;
-                this.indexBuffer[index++] = vertexIndex - 4;
-                this.indexBuffer[index++] = vertexIndex - 3;
-
-                this.indexBuffer[index++] = vertexIndex - 2;
-                this.indexBuffer[index++] = vertexIndex - 3;
-                this.indexBuffer[index++] = vertexIndex - 1;
-            }
         }
         this.vertexCount = vertexIndex;
         this.indexCount = index;
@@ -163,6 +202,9 @@ class LineGeometryBuilder {
         this.indexBuffer = this.indexBuffer.slice(0, this.indexCount);
 
         geometry.addAttribute( 'position', new THREE.BufferAttribute( this.positionBuffer, 3 ) );
+
+        // note, 3JS requires that uv is 2d, we need 3d uv
+        // maybe, we can add 3rd attribute in separate, 1d attribute
         geometry.addAttribute( 'uvx', new THREE.BufferAttribute( this.uvBuffer, 3 ) );
         //geometry.addAttribute( 'normal', new THREE.BufferAttribute( this.normalsBuffer, 3 ) );
         geometry.setIndex(new THREE.BufferAttribute(this.indexBuffer, 1));
@@ -175,17 +217,18 @@ function createStreetGeometry() {
     b.addLine([
         new THREE.Vector3(-3, 0, 0),
         new THREE.Vector3(0, 0, 0)
+        //new THREE.Vector3(3, -1, 0)
     ])
     b.addLine([
-        new THREE.Vector3(0, 0, 0),
-        new THREE.Vector3(7, 2, 0),
-    ])
+         new THREE.Vector3(0, 0, 0),
+         new THREE.Vector3(7, 2, 0),
+     ])
 
-    b.addLine([
-        new THREE.Vector3(-2, 4, 0),
-        new THREE.Vector3(1, -2, 0),
-        new THREE.Vector3(4, -2, 0)
-    ]);
+     b.addLine([
+         new THREE.Vector3(-2, 4, 0),
+         new THREE.Vector3(1, -2.5, 0),
+         new THREE.Vector3(4, -2.5, 0)
+     ]);
 
     return b.buildGeometry();
 }
